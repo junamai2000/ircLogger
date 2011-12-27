@@ -1,0 +1,109 @@
+#!/usr/bin/perl
+# vim: set expandtab tabstop=2 shiftwidth=2 softtabstop=2 filetype=perl:
+
+use strict;
+use warnings;
+use POE qw(Sugar::Args Component::IRC);
+use Class::Inspector;
+use IO::All;
+use Getopt::Long;
+use DateTime;
+use File::Spec;
+use File::Path;
+
+my @channels = ();
+my $nick    = 'logger';
+my $server  = 'xxx.xxx.xxx.xxx';
+my $port    = 1111;
+my $pid     = '/tmp/ircLogger.pid';
+my $logbase = '/var/www/irc';
+
+my $result = GetOptions (
+  "channel=s" => \@channels,
+  "nick=s"    => \$nick,
+  "server=s"  => \$server,
+  "port=i"    => \$port,
+  "pid=s"     => \$pid,
+);
+
+POE::Component::IRC->spawn(
+  alias   => 'logger',
+  nick    => $nick,
+  server  => $server,
+  port    => $port,
+  password    => 'xxxxxx',
+) or die "opps $!";
+
+POE::Session->create(
+  package_states => [ main => Class::Inspector->methods('main') ],
+  args           => \@ARGV,
+);
+
+POE::Kernel->sig(INT => sub { POE::Kernel->stop });
+
+my $f = io($pid);
+$f->print("$$\n") ;
+$f->close();
+
+POE::Kernel->run;
+
+sub _start
+{
+  my $poe = sweet_args;
+  $poe->kernel->post(logger=> register => 'all');
+  $poe->kernel->post(logger=> connect  => {});
+}
+
+sub irc_001
+{
+  my $poe = sweet_args;
+  $poe->kernel->post( $poe->sender => join => $_ ) for @channels;
+}
+
+sub irc_msg
+{
+  my $poe = sweet_args;
+  my @account = split(/\!/, $poe->args->[0]);
+  my $nick = $account[0];
+  my $dt = DateTime->now( time_zone => 'local' );
+
+  if($poe->args->[2] =~ /^log/)
+  {
+    my @command = split(/ /, $poe->args->[2]);
+    my $file = $dt->strftime($logbase."/".$command[1]."/%Y/%m/%d.log");
+    my $io = IO::File->new($file, 'r') or return;
+    while (not $io->eof) {
+      my $line = $io->getline;
+      my @msg = split(/\!/, $line);
+      my @client = split(/\]/, $msg[0]);
+      my @commnet = split(/:/, $msg[1]);
+
+      my $output = $client[1]." : ".$commnet[1];
+      $poe->kernel->post( logger => privmsg => $nick => "$output" );
+    }
+    $io->close;
+  }
+}
+
+sub irc_public
+{
+  my $poe = sweet_args;
+  my $who = $poe->args->[0];
+  my $channels = $poe->args->[1];
+  my $what = $poe->args->[2] ;
+  my $dt = DateTime->now( time_zone => 'local' );
+
+  for my $channel ( @{ $channels } ) {
+    $channel =~ s/#//g;
+    my $dir = $dt->strftime($logbase."/$channel/%Y/%m/");
+    if(!-d $dir) {
+      my @dir = ($dir);
+      mkpath(@dir);
+    }
+    my $log = $dt->strftime("%d.log");
+    my $logfile = File::Spec->catfile($dir, $log);
+    my $io = io( $logfile );
+    $io->append( '[' . $dt->ymd . ' ' . $dt->hms . ']' . $who . ":" . $what  . "\n" ) ;
+    $io->close();
+  }
+}

@@ -1,0 +1,1 @@
+/usr/local/bin/ircLogger --channel #test --channel #test2 --channel #test3 --nick logger --server xxx.xxx.xxx.xxx --port 12345
